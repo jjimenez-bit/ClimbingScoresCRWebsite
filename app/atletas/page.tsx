@@ -1,127 +1,102 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import { 
-  Users, 
   Search, 
-  Filter, 
-  Trophy, 
-  Medal, 
+  ChevronLeft, 
+  ChevronRight, 
   ArrowRight,
-  Sparkles
+  AlertCircle
 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
-import { Athlete } from "@/types/climbing";
 
-const fallbackAthletes: Athlete[] = [
-  {
-    id: "ath-1",
-    first_name: "Alberto",
-    last_name: "Ginés López",
-    country_code: "ESP",
-    country_name: "España",
-    category: "Senior",
-    discipline_primary: "Lead",
-    current_rank: 1,
-    total_podiums: 14,
-    bio: "Campeón olímpico en Tokio 2020 y especialista en dificultad y bloque.",
-  },
-  {
-    id: "ath-2",
-    first_name: "Tomoa",
-    last_name: "Narasaki",
-    country_code: "JPN",
-    country_name: "Japón",
-    category: "Senior",
-    discipline_primary: "Boulder",
-    current_rank: 2,
-    total_podiums: 26,
-    bio: "Pionero del estilo dinámico moderno e inventor del paso Tomoa-skip.",
-  },
-  {
-    id: "ath-3",
-    first_name: "Jakob",
-    last_name: "Schubert",
-    country_code: "AUT",
-    country_name: "Austria",
-    category: "Senior",
-    discipline_primary: "Lead",
-    current_rank: 3,
-    total_podiums: 32,
-    bio: "Múltiple campeón mundial de dificultad y combinado.",
-  },
-  {
-    id: "ath-4",
-    first_name: "Sorato",
-    last_name: "Anraku",
-    country_code: "JPN",
-    country_name: "Japón",
-    category: "Senior",
-    discipline_primary: "Combined",
-    current_rank: 4,
-    total_podiums: 18,
-    bio: "Fenómeno de consistencia técnica tanto en búlder como en vía.",
-  },
-  {
-    id: "ath-5",
-    first_name: "Janja",
-    last_name: "Garnbret",
-    country_code: "SLO",
-    country_name: "Eslovenia",
-    category: "Senior",
-    discipline_primary: "Combined",
-    current_rank: 1,
-    total_podiums: 45,
-    bio: "Considerada una de las mejores escaladoras de competición de todos los tiempos.",
-  },
-  {
-    id: "ath-6",
-    first_name: "Mickael",
-    last_name: "Mawem",
-    country_code: "FRA",
-    country_name: "Francia",
-    category: "Senior",
-    discipline_primary: "Boulder",
-    current_rank: 8,
-    total_podiums: 9,
-    bio: "Campeón mundial de bloque conocido por su potencia y coordinación explosiva.",
-  },
-];
+interface DatabaseAthlete {
+  id: string;
+  nombre_completo?: string;
+  nombre?: string;
+  primer_apellido?: string;
+  segundo_apellido?: string;
+  nacionalidad?: string;
+  [key: string]: any;
+}
+
+const PAGE_SIZE = 12;
 
 export default function AtletasPage() {
-  const [athletes, setAthletes] = useState<Athlete[]>(fallbackAthletes);
+  const [allAthletes, setAllAthletes] = useState<DatabaseAthlete[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Search & Pagination
   const [searchQuery, setSearchQuery] = useState("");
-  const [selectedCategory, setSelectedCategory] = useState<string>("All");
+  const [currentPage, setCurrentPage] = useState(1);
+
+  const getAthleteName = (ath: DatabaseAthlete): string => {
+    if (ath.nombre_completo) return ath.nombre_completo;
+    const parts = [ath.nombre, ath.primer_apellido, ath.segundo_apellido].filter(Boolean);
+    return parts.join(" ") || `Atleta #${ath.id.slice(0, 6)}`;
+  };
+
+  const getInitials = (ath: DatabaseAthlete): string => {
+    const name = getAthleteName(ath);
+    const parts = name.split(" ").filter(Boolean);
+    if (parts.length >= 2) {
+      return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+    }
+    return name.slice(0, 2).toUpperCase() || "AT";
+  };
 
   useEffect(() => {
-    async function fetchAthletes() {
+    async function loadAllAthletes() {
+      setLoading(true);
+      setError(null);
+
       try {
-        const { data, error } = await supabase
+        const { data, error: fetchErr } = await supabase
           .from("athletes")
           .select("*")
-          .order("last_name", { ascending: true });
+          .order("nombre_completo", { ascending: true });
 
-        if (!error && data && data.length > 0) {
-          // Normalize if table has different column naming
-          setAthletes(data);
+        if (fetchErr) throw fetchErr;
+        setAllAthletes(data || []);
+      } catch (err: unknown) {
+        console.error("Error loading athletes:", err);
+        if (err instanceof Error) {
+          setError(err.message);
+        } else {
+          setError("Error al conectar con la base de datos de atletas.");
         }
-      } catch (err) {
-        console.warn("Using fallback local athletes:", err);
+      } finally {
+        setLoading(false);
       }
     }
 
-    fetchAthletes();
+    loadAllAthletes();
   }, []);
 
-  const filteredAthletes = athletes.filter((athlete) => {
-    const fullName = `${athlete.first_name} ${athlete.last_name}`.toLowerCase();
-    const matchesSearch = fullName.includes(searchQuery.toLowerCase()) ||
-      athlete.country_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      athlete.country_code.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesCategory = selectedCategory === "All" || athlete.category === selectedCategory;
-    return matchesSearch && matchesCategory;
-  });
+  // Instant reactive client-side search across name & country
+  const filteredAthletes = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return allAthletes;
+
+    return allAthletes.filter((ath) => {
+      const name = getAthleteName(ath).toLowerCase();
+      const country = (ath.nacionalidad || "").toLowerCase();
+      return name.includes(query) || country.includes(query);
+    });
+  }, [allAthletes, searchQuery]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery]);
+
+  const totalCount = filteredAthletes.length;
+  const totalPages = Math.ceil(totalCount / PAGE_SIZE) || 1;
+  const paginatedAthletes = useMemo(() => {
+    const from = (currentPage - 1) * PAGE_SIZE;
+    return filteredAthletes.slice(from, from + PAGE_SIZE);
+  }, [filteredAthletes, currentPage]);
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
@@ -134,115 +109,139 @@ export default function AtletasPage() {
           Directorio de Atletas
         </h1>
         <p className="mt-2 text-sm text-foreground-muted">
-          Perfiles oficiales, categorías federativas y palmarés de competición internacional.
+          Base de datos oficial sincronizada en tiempo real con Supabase.
         </p>
       </div>
 
-      {/* Filter and Search Bar */}
-      <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="relative flex-1 max-w-md">
-          <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-foreground-subtle" />
+      {/* Clean Full-Width Search Bar */}
+      <div className="mt-6">
+        <div className="relative w-full">
+          <Search className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-foreground-subtle" />
           <input
             type="text"
-            placeholder="Buscar por nombre, apellido o país..."
+            placeholder="Buscar por nombre, apellido o país de atleta..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full rounded-xl border border-border bg-background-surface pl-10 pr-4 py-2.5 text-sm text-foreground placeholder:text-foreground-subtle focus:border-brand focus:outline-none shadow-sm"
+            className="w-full rounded-xl border border-border bg-background-surface pl-12 pr-4 py-3 text-sm text-foreground placeholder:text-foreground-subtle focus:border-brand focus:outline-none shadow-sm transition-all"
           />
         </div>
+      </div>
 
-        {/* Category Filter Chips */}
-        <div className="flex items-center gap-2 overflow-x-auto pb-1 sm:pb-0">
-          <Filter className="h-4 w-4 text-foreground-subtle flex-shrink-0" />
-          {["All", "Senior", "U20", "U18", "Paraclimbing"].map((cat) => (
-            <button
-              key={cat}
-              onClick={() => setSelectedCategory(cat)}
-              className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-all ${
-                selectedCategory === cat
-                  ? "bg-brand text-white shadow-sm"
-                  : "bg-background-surface border border-border text-foreground-muted hover:bg-background-subtle"
-              }`}
+      {/* Error state */}
+      {error && (
+        <div className="mt-6 flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+          <AlertCircle className="h-5 w-5 flex-shrink-0 text-red-500" />
+          <span>Error de conexión: {error}</span>
+        </div>
+      )}
+
+      {/* Loading Skeletons */}
+      {loading ? (
+        <div className="mt-8 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+          {[...Array(6)].map((_, i) => (
+            <div
+              key={i}
+              className="rounded-xl border border-border bg-background-surface p-6 shadow-card animate-pulse space-y-4"
             >
-              {cat === "All" ? "Todas las categorías" : cat}
-            </button>
+              <div className="flex items-center justify-between">
+                <div className="h-12 w-12 rounded-xl bg-slate-200" />
+                <div className="h-5 w-12 rounded bg-slate-200" />
+              </div>
+              <div className="h-5 w-3/4 rounded bg-slate-200" />
+              <div className="h-8 rounded bg-slate-100" />
+            </div>
           ))}
         </div>
-      </div>
+      ) : paginatedAthletes.length > 0 ? (
+        /* Minimalist Clean Athletes Grid */
+        <div className="mt-8 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+          {paginatedAthletes.map((ath) => {
+            const fullName = getAthleteName(ath);
+            const initials = getInitials(ath);
+            const country = ath.nacionalidad || "N/A";
 
-      {/* Athletes Cards Grid */}
-      <div className="mt-8 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-        {filteredAthletes.map((athlete) => {
-          const initials = `${athlete.first_name[0]}${athlete.last_name[0]}`;
-          return (
-            <div
-              key={athlete.id}
-              className="group flex flex-col justify-between rounded-xl border border-border bg-background-surface p-6 shadow-card hover:border-brand-300 hover:shadow-hover transition-all"
-            >
-              <div>
-                <div className="flex items-start justify-between">
-                  {/* Avatar / Monogram */}
-                  <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-50 border border-brand-200 text-brand font-bold text-base shadow-sm">
-                    {initials}
-                  </div>
+            return (
+              <div
+                key={ath.id}
+                className="group flex flex-col justify-between rounded-xl border border-border bg-background-surface p-6 shadow-card hover:border-brand-300 hover:shadow-hover transition-all"
+              >
+                <div>
+                  {/* Initials & Country only */}
+                  <div className="flex items-start justify-between">
+                    <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-brand-50 border border-brand-200 text-brand font-bold text-base shadow-sm">
+                      {initials}
+                    </div>
 
-                  {/* Discipline / Country Tag */}
-                  <div className="flex flex-col items-end gap-1">
-                    <span className="rounded-md bg-background-subtle px-2 py-0.5 text-xs font-bold text-foreground">
-                      {athlete.country_code}
-                    </span>
-                    <span className="text-[11px] font-medium text-foreground-muted">
-                      {athlete.category}
+                    <span className="rounded-md bg-background-subtle px-2.5 py-1 text-xs font-bold text-foreground">
+                      {country}
                     </span>
                   </div>
+
+                  {/* Athlete Name */}
+                  <h3 className="mt-4 text-lg font-bold text-foreground group-hover:text-brand transition-colors">
+                    {fullName}
+                  </h3>
                 </div>
 
-                {/* Name */}
-                <h3 className="mt-4 text-lg font-bold text-foreground group-hover:text-brand transition-colors">
-                  {athlete.first_name} {athlete.last_name}
-                </h3>
-                <p className="text-xs text-foreground-muted">{athlete.country_name}</p>
-
-                {athlete.bio && (
-                  <p className="mt-3 text-xs text-foreground-muted line-clamp-2 leading-relaxed">
-                    {athlete.bio}
-                  </p>
-                )}
-
-                {/* Quick stats */}
-                <div className="mt-5 grid grid-cols-2 gap-2 border-t border-border pt-4 text-xs">
-                  <div>
-                    <span className="text-foreground-subtle">Disciplina:</span>
-                    <p className="font-semibold text-foreground">{athlete.discipline_primary}</p>
-                  </div>
-                  <div>
-                    <span className="text-foreground-subtle">Podios Totales:</span>
-                    <p className="font-semibold text-foreground flex items-center gap-1">
-                      <Medal className="h-3.5 w-3.5 text-amber-500" />
-                      {athlete.total_podiums ?? 0}
-                    </p>
-                  </div>
+                {/* Drill-down button */}
+                <div className="mt-6 border-t border-border pt-4">
+                  <Link
+                    href={`/atletas/${ath.id}`}
+                    className="flex items-center justify-between text-xs font-semibold text-brand hover:text-brand-700"
+                  >
+                    <span>Ver Perfil Completo</span>
+                    <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
+                  </Link>
                 </div>
               </div>
-
-              {/* Action */}
-              <div className="mt-6 border-t border-border pt-4">
-                <Link
-                  href={`/atletas/${athlete.id}`}
-                  className="flex items-center justify-between text-xs font-semibold text-brand hover:text-brand-700"
-                >
-                  <span>Ver Perfil Completo</span>
-                  <ArrowRight className="h-3.5 w-3.5 transition-transform group-hover:translate-x-0.5" />
-                </Link>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {filteredAthletes.length === 0 && (
+            );
+          })}
+        </div>
+      ) : (
+        /* Empty State */
         <div className="mt-12 rounded-xl border border-dashed border-border p-12 text-center text-sm text-foreground-muted">
           No se encontraron atletas que coincidan con &quot;{searchQuery}&quot;.
+        </div>
+      )}
+
+      {/* Pagination Controls */}
+      {!loading && totalCount > 0 && (
+        <div className="mt-10 flex flex-col items-center justify-between gap-4 border-t border-border pt-6 sm:flex-row">
+          <span className="text-xs text-foreground-muted">
+            Mostrando{" "}
+            <span className="font-semibold text-foreground">
+              {(currentPage - 1) * PAGE_SIZE + 1}
+            </span>{" "}
+            a{" "}
+            <span className="font-semibold text-foreground">
+              {Math.min(currentPage * PAGE_SIZE, totalCount)}
+            </span>{" "}
+            de <span className="font-semibold text-foreground">{totalCount}</span> atletas
+          </span>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setCurrentPage((p) => Math.max(p - 1, 1))}
+              disabled={currentPage === 1}
+              className="inline-flex items-center gap-1 rounded-lg border border-border bg-background-surface px-3 py-2 text-xs font-semibold text-foreground shadow-sm hover:bg-background-subtle disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            >
+              <ChevronLeft className="h-4 w-4" />
+              Anterior
+            </button>
+
+            <span className="px-2 text-xs font-semibold text-foreground">
+              Página {currentPage} de {totalPages}
+            </span>
+
+            <button
+              onClick={() => setCurrentPage((p) => Math.min(p + 1, totalPages))}
+              disabled={currentPage === totalPages}
+              className="inline-flex items-center gap-1 rounded-lg border border-border bg-background-surface px-3 py-2 text-xs font-semibold text-foreground shadow-sm hover:bg-background-subtle disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            >
+              Siguiente
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
         </div>
       )}
     </div>

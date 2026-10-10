@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { 
@@ -9,115 +9,245 @@ import {
   Calendar, 
   Medal, 
   Layers, 
-  Award
+  Award,
+  Loader2,
+  AlertCircle
 } from "lucide-react";
-import { CompetitionResult, RouteDetail } from "@/types/climbing";
+import { supabase } from "@/lib/supabaseClient";
 
-// Mock results data for detailed view
-const sampleResults: CompetitionResult[] = [
-  { rank: 1, athlete_id: "ath-1", athlete_name: "Alberto Ginés López", country: "ESP", category: "Senior Masculino", score: "4T 4z 7 5" },
-  { rank: 2, athlete_id: "ath-2", athlete_name: "Tomoa Narasaki", country: "JPN", category: "Senior Masculino", score: "3T 4z 5 6" },
-  { rank: 3, athlete_id: "ath-3", athlete_name: "Jakob Schubert", country: "AUT", category: "Senior Masculino", score: "3T 3z 6 4" },
-  { rank: 4, athlete_id: "ath-4", athlete_name: "Sorato Anraku", country: "JPN", category: "Senior Masculino", score: "2T 4z 3 7" },
-  { rank: 5, athlete_id: "ath-5", athlete_name: "Mickael Mawem", country: "FRA", category: "Senior Masculino", score: "2T 3z 4 5" },
-];
+interface CompetitionDetail {
+  id: string;
+  nombre: string;
+  modalidad?: string;
+  sede?: string;
+  año?: number;
+  categoria?: string;
+}
 
-const sampleRouteDetails: RouteDetail[] = [
-  { route_name: "Bloque 1 - Dinámico de Coordinación", round: "Final", tops: 5, zones: 6, top_attempts: 11, zone_attempts: 7 },
-  { route_name: "Bloque 2 - Placa Técnica & Pies Falsos", round: "Final", tops: 2, zones: 5, top_attempts: 8, zone_attempts: 9 },
-  { route_name: "Bloque 3 - Físico de Compresión", round: "Final", tops: 3, zones: 4, top_attempts: 9, zone_attempts: 6 },
-  { route_name: "Bloque 4 - Salto Final a Regletas", round: "Final", tops: 1, zones: 3, top_attempts: 4, zone_attempts: 6 },
-];
+interface StageStanding {
+  result_id: string;
+  athlete_id: string;
+  athlete_name: string;
+  nacionalidad: string;
+  result_categoria?: string;
+  etapa: string;
+  tops: number;
+  zones: number;
+  top_attempts: number;
+  zone_attempts: number;
+  score_formatted: string;
+  rank: number;
+}
 
 export default function CampeonatoDetailPage() {
   const params = useParams();
   const id = params?.id as string;
-  const [activeTab, setActiveTab] = useState<"classification" | "routes">("classification");
+
+  const [competition, setCompetition] = useState<CompetitionDetail | null>(null);
+  const [standings, setStandings] = useState<StageStanding[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Active view tab
+  const [activeTab, setActiveTab] = useState<"classification" | "boulders">("classification");
+  // Active stage selector
+  const [selectedStage, setSelectedStage] = useState<string>("");
+
+  useEffect(() => {
+    if (!id) return;
+
+    async function fetchCompetitionData() {
+      setLoading(true);
+      setError(null);
+
+      try {
+        // 1. Fetch competition metadata
+        const { data: compData, error: compErr } = await supabase
+          .from("competitions")
+          .select("*")
+          .eq("id", id)
+          .single();
+
+        if (compErr) throw compErr;
+        setCompetition(compData);
+
+        // 2. Fetch computed stage results from view
+        const { data: resultsData, error: resultsErr } = await supabase
+          .from("v_competition_results")
+          .select("*")
+          .eq("competition_id", id)
+          .order("rank", { ascending: true });
+
+        if (!resultsErr && resultsData) {
+          setStandings(resultsData);
+          if (resultsData.length > 0) {
+            // Find distinct stages
+            const stages = Array.from(new Set(resultsData.map((r) => r.etapa)));
+            // Default to 'Final' if present, otherwise first stage
+            const initialStage = stages.find((s) => s.toLowerCase().includes("final")) || stages[0];
+            setSelectedStage(initialStage);
+          }
+        }
+      } catch (err: unknown) {
+        console.error("Error loading competition details:", err);
+        if (err instanceof Error) {
+          setError(err.message);
+        } else {
+          setError("Error al cargar la información del campeonato.");
+        }
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    fetchCompetitionData();
+  }, [id]);
+
+  // Distinct stages available for this competition
+  const availableStages = useMemo(() => {
+    const stages = Array.from(new Set(standings.map((s) => s.etapa)));
+    // Order: Clasificatoria -> Semifinal -> Final
+    const orderWeight = (st: string) => {
+      const s = st.toLowerCase();
+      if (s.includes("clasif")) return 1;
+      if (s.includes("semi")) return 2;
+      if (s.includes("final")) return 3;
+      return 4;
+    };
+    return stages.sort((a, b) => orderWeight(a) - orderWeight(b));
+  }, [standings]);
+
+  // Filtered standings for the chosen stage
+  const stageResults = useMemo(() => {
+    return standings.filter((s) => s.etapa === selectedStage);
+  }, [standings, selectedStage]);
+
+  if (loading) {
+    return (
+      <div className="mx-auto flex max-w-7xl items-center justify-center py-24">
+        <Loader2 className="h-8 w-8 animate-spin text-brand" />
+        <span className="ml-3 text-sm text-foreground-muted">Cargando resultados del campeonato...</span>
+      </div>
+    );
+  }
+
+  if (error || !competition) {
+    return (
+      <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
+        <Link
+          href="/campeonatos"
+          className="inline-flex items-center gap-1.5 text-xs font-semibold text-foreground-muted hover:text-foreground transition-colors mb-6"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          Volver al Directorio
+        </Link>
+        <div className="rounded-xl border border-red-200 bg-red-50 p-6 text-center text-sm text-red-700">
+          <AlertCircle className="mx-auto h-8 w-8 text-red-500 mb-2" />
+          <h2 className="text-base font-bold">No se pudo cargar el campeonato</h2>
+          <p className="mt-1 text-xs">{error || "El campeonato no existe en la base de datos."}</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
-      {/* Breadcrumb / Back button */}
+      {/* Back button */}
       <Link
         href="/campeonatos"
         className="inline-flex items-center gap-1.5 text-xs font-semibold text-foreground-muted hover:text-foreground transition-colors mb-6"
       >
         <ArrowLeft className="h-4 w-4" />
-        Volver al Directorio
+        Volver a Campeonatos
       </Link>
 
       {/* Header Banner */}
       <div className="rounded-2xl border border-border bg-background-surface p-6 sm:p-8 shadow-card">
         <div className="flex flex-wrap items-center gap-2">
           <span className="rounded-md bg-brand-50 px-2.5 py-1 text-xs font-bold uppercase tracking-wider text-brand-700 border border-brand-200">
-            Boulder
+            {competition.modalidad || "Competición"}
           </span>
-          <span className="rounded-md bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700 border border-emerald-200">
-            Acta Oficial Validada
-          </span>
+          {competition.categoria && (
+            <span className="rounded-md bg-background-subtle px-2.5 py-1 text-xs font-semibold text-foreground">
+              {competition.categoria}
+            </span>
+          )}
         </div>
 
         <h1 className="mt-3 text-2xl font-extrabold tracking-tight text-foreground sm:text-3xl">
-          Copa Continental de Bloque 2026
+          {competition.nombre}
         </h1>
 
         <div className="mt-3 flex flex-wrap items-center gap-4 text-xs text-foreground-muted">
-          <div className="flex items-center gap-1.5">
-            <MapPin className="h-4 w-4 text-brand" />
-            <span>Madrid, España</span>
+          {competition.sede && (
+            <div className="flex items-center gap-1.5">
+              <MapPin className="h-4 w-4 text-brand" />
+              <span>{competition.sede}</span>
+            </div>
+          )}
+          {competition.año && (
+            <div className="flex items-center gap-1.5">
+              <Calendar className="h-4 w-4 text-brand" />
+              <span>Año {competition.año}</span>
+            </div>
+          )}
+          <div>
+            Participantes registrados: <strong className="text-foreground">{new Set(standings.map((s) => s.athlete_id)).size}</strong>
           </div>
-          <div className="flex items-center gap-1.5">
-            <Calendar className="h-4 w-4 text-brand" />
-            <span>12 - 14 Marzo 2026</span>
-          </div>
-          <div>ID de Evento: <code className="font-mono text-foreground">{id}</code></div>
         </div>
       </div>
 
-      {/* Navigation Tabs */}
-      <div className="mt-8 flex gap-2 border-b border-border">
-        <button
-          onClick={() => setActiveTab("classification")}
-          className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-semibold transition-all ${
-            activeTab === "classification"
-              ? "border-brand text-brand"
-              : "border-transparent text-foreground-muted hover:text-foreground"
-          }`}
-        >
-          <Medal className="h-4 w-4" />
-          Clasificación General
-        </button>
-        <button
-          onClick={() => setActiveTab("routes")}
-          className={`flex items-center gap-2 border-b-2 px-4 py-3 text-sm font-semibold transition-all ${
-            activeTab === "routes"
-              ? "border-brand text-brand"
-              : "border-transparent text-foreground-muted hover:text-foreground"
-          }`}
-        >
-          <Layers className="h-4 w-4" />
-          Desglose de Rutas y Bloques
-        </button>
-      </div>
+      {/* Stage Selector Pills */}
+      {availableStages.length > 0 && (
+        <div className="mt-8 flex items-center gap-2 overflow-x-auto pb-1">
+          <span className="text-xs font-semibold uppercase text-foreground-muted mr-2">
+            Rondas:
+          </span>
+          {availableStages.map((stage) => (
+            <button
+              key={stage}
+              onClick={() => setSelectedStage(stage)}
+              className={`rounded-lg px-3.5 py-2 text-xs font-bold transition-all ${
+                selectedStage === stage
+                  ? "bg-brand text-white shadow-sm"
+                  : "bg-background-surface border border-border text-foreground-muted hover:bg-background-subtle"
+              }`}
+            >
+              {stage}
+            </button>
+          ))}
+        </div>
+      )}
 
-      {/* Tab Content */}
+      {/* Standings Table */}
       <div className="mt-6">
-        {activeTab === "classification" ? (
+        {stageResults.length > 0 ? (
           <div className="overflow-hidden rounded-xl border border-border bg-background-surface shadow-card">
+            <div className="bg-background-subtle/50 px-6 py-3 border-b border-border flex items-center justify-between">
+              <span className="text-xs font-bold text-foreground uppercase tracking-wider">
+                Resultados Oficiales - {selectedStage}
+              </span>
+              <span className="text-xs text-foreground-muted">
+                {stageResults.length} atletas clasificados
+              </span>
+            </div>
+
             <table className="min-w-full divide-y divide-border text-left text-sm">
-              <thead className="bg-background-subtle/60 text-xs font-semibold uppercase tracking-wider text-foreground-muted">
+              <thead className="bg-background-subtle/30 text-xs font-semibold uppercase tracking-wider text-foreground-muted">
                 <tr>
                   <th scope="col" className="px-6 py-3.5">Posición</th>
                   <th scope="col" className="px-6 py-3.5">Atleta</th>
                   <th scope="col" className="px-6 py-3.5">País</th>
-                  <th scope="col" className="px-6 py-3.5">Categoría</th>
-                  <th scope="col" className="px-6 py-3.5 text-right">Resultado (Tops/Zonas)</th>
+                  <th scope="col" className="px-6 py-3.5 text-center">Tops</th>
+                  <th scope="col" className="px-6 py-3.5 text-center">Zonas</th>
+                  <th scope="col" className="px-6 py-3.5 text-right">Resultado (Tops/Zonas/Intentos)</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {sampleResults.map((res) => (
+                {stageResults.map((res) => (
                   <tr key={res.athlete_id} className="hover:bg-background-subtle/30 transition-colors">
                     <td className="px-6 py-4 font-semibold text-foreground">
-                      <span className="flex items-center gap-2">
+                      <span className="flex items-center gap-1.5">
                         {res.rank === 1 && <Award className="h-4 w-4 text-amber-500" />}
                         {res.rank === 2 && <Award className="h-4 w-4 text-slate-400" />}
                         {res.rank === 3 && <Award className="h-4 w-4 text-amber-700" />}
@@ -133,13 +263,18 @@ export default function CampeonatoDetailPage() {
                       </Link>
                     </td>
                     <td className="px-6 py-4">
-                      <span className="rounded bg-background-subtle px-2 py-0.5 text-xs font-bold text-foreground-muted">
-                        {res.country}
+                      <span className="rounded bg-background-subtle px-2 py-0.5 text-xs font-bold text-foreground">
+                        {res.nacionalidad || "-"}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-foreground-muted text-xs">{res.category}</td>
+                    <td className="px-6 py-4 text-center font-bold text-foreground">
+                      {res.tops}
+                    </td>
+                    <td className="px-6 py-4 text-center font-bold text-foreground">
+                      {res.zones}
+                    </td>
                     <td className="px-6 py-4 text-right font-mono text-xs font-bold text-foreground">
-                      {res.score}
+                      {res.score_formatted}
                     </td>
                   </tr>
                 ))}
@@ -147,34 +282,8 @@ export default function CampeonatoDetailPage() {
             </table>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            {sampleRouteDetails.map((route, idx) => (
-              <div
-                key={idx}
-                className="rounded-xl border border-border bg-background-surface p-5 shadow-card"
-              >
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-brand uppercase tracking-wider">
-                    {route.round}
-                  </span>
-                  <span className="text-xs font-medium text-foreground-muted">
-                    Bloque #{idx + 1}
-                  </span>
-                </div>
-                <h4 className="mt-2 text-base font-bold text-foreground">{route.route_name}</h4>
-
-                <div className="mt-4 grid grid-cols-2 gap-3 border-t border-border pt-4 text-xs">
-                  <div>
-                    <span className="text-foreground-muted">Tops conseguidos:</span>
-                    <p className="text-base font-bold text-foreground">{route.tops} <span className="text-xs font-normal text-foreground-muted">({route.top_attempts} intentos)</span></p>
-                  </div>
-                  <div>
-                    <span className="text-foreground-muted">Zonas alcanzadas:</span>
-                    <p className="text-base font-bold text-foreground">{route.zones} <span className="text-xs font-normal text-foreground-muted">({route.zone_attempts} intentos)</span></p>
-                  </div>
-                </div>
-              </div>
-            ))}
+          <div className="rounded-xl border border-dashed border-border p-8 text-center text-xs text-foreground-muted">
+            No hay resultados registrados para la ronda seleccionada.
           </div>
         )}
       </div>
