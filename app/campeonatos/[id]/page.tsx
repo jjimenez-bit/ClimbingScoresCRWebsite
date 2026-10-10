@@ -7,11 +7,12 @@ import {
   ArrowLeft, 
   MapPin, 
   Calendar, 
-  Medal, 
-  Layers, 
   Award,
   Loader2,
-  AlertCircle
+  AlertCircle,
+  Filter,
+  CheckCircle2,
+  Sparkles
 } from "lucide-react";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -35,6 +36,8 @@ interface StageStanding {
   zones: number;
   top_attempts: number;
   zone_attempts: number;
+  total_points: number;
+  score_breakdown: string;
   score_formatted: string;
   rank: number;
 }
@@ -48,10 +51,9 @@ export default function CampeonatoDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Active view tab
-  const [activeTab, setActiveTab] = useState<"classification" | "boulders">("classification");
-  // Active stage selector
+  // Active stage and category filters
   const [selectedStage, setSelectedStage] = useState<string>("");
+  const [selectedCategory, setSelectedCategory] = useState<string>("");
 
   useEffect(() => {
     if (!id) return;
@@ -81,11 +83,20 @@ export default function CampeonatoDetailPage() {
         if (!resultsErr && resultsData) {
           setStandings(resultsData);
           if (resultsData.length > 0) {
-            // Find distinct stages
             const stages = Array.from(new Set(resultsData.map((r) => r.etapa)));
-            // Default to 'Final' if present, otherwise first stage
             const initialStage = stages.find((s) => s.toLowerCase().includes("final")) || stages[0];
             setSelectedStage(initialStage);
+
+            const categoriesForStage = Array.from(
+              new Set(
+                resultsData
+                  .filter((r) => r.etapa === initialStage)
+                  .map((r) => r.result_categoria || "General")
+              )
+            );
+            if (categoriesForStage.length > 0) {
+              setSelectedCategory(categoriesForStage[0]);
+            }
           }
         }
       } catch (err: unknown) {
@@ -103,10 +114,11 @@ export default function CampeonatoDetailPage() {
     fetchCompetitionData();
   }, [id]);
 
-  // Distinct stages available for this competition
+  const isModernScoring = (competition?.año || 0) >= 2025;
+
+  // Distinct stages ordered (Clasificatoria -> Semifinal -> Final)
   const availableStages = useMemo(() => {
     const stages = Array.from(new Set(standings.map((s) => s.etapa)));
-    // Order: Clasificatoria -> Semifinal -> Final
     const orderWeight = (st: string) => {
       const s = st.toLowerCase();
       if (s.includes("clasif")) return 1;
@@ -117,10 +129,45 @@ export default function CampeonatoDetailPage() {
     return stages.sort((a, b) => orderWeight(a) - orderWeight(b));
   }, [standings]);
 
-  // Filtered standings for the chosen stage
-  const stageResults = useMemo(() => {
-    return standings.filter((s) => s.etapa === selectedStage);
+  // Distinct categories available in current selected stage
+  const availableCategories = useMemo(() => {
+    if (!selectedStage) return [];
+    const cats = Array.from(
+      new Set(
+        standings
+          .filter((s) => s.etapa === selectedStage)
+          .map((s) => s.result_categoria || "General")
+      )
+    );
+    return cats;
   }, [standings, selectedStage]);
+
+  useEffect(() => {
+    if (availableCategories.length > 0 && !availableCategories.includes(selectedCategory)) {
+      setSelectedCategory(availableCategories[0]);
+    }
+  }, [availableCategories, selectedCategory]);
+
+  // Athletes who qualified for Final (to highlight them in Clasificatoria)
+  const finalistAthleteIds = useMemo(() => {
+    return new Set(
+      standings
+        .filter((s) => s.etapa.toLowerCase().includes("final") && !s.etapa.toLowerCase().includes("semi"))
+        .map((s) => s.athlete_id)
+    );
+  }, [standings]);
+
+  // Filtered stage results by Category
+  const filteredResults = useMemo(() => {
+    return standings.filter(
+      (s) =>
+        s.etapa === selectedStage &&
+        (s.result_categoria || "General") === selectedCategory
+    );
+  }, [standings, selectedStage, selectedCategory]);
+
+  const isFinalRound = selectedStage.toLowerCase().includes("final") && !selectedStage.toLowerCase().includes("semi");
+  const isQualificationRound = selectedStage.toLowerCase().includes("clasif") || selectedStage.toLowerCase().includes("quali");
 
   if (loading) {
     return (
@@ -172,6 +219,11 @@ export default function CampeonatoDetailPage() {
               {competition.categoria}
             </span>
           )}
+          {isModernScoring && (
+            <span className="inline-flex items-center gap-1 rounded-md bg-sky-50 px-2.5 py-1 text-xs font-bold text-sky-700 border border-sky-200">
+              <Sparkles className="h-3 w-3" /> Sistema Olímpico de Puntos (≥2025)
+            </span>
+          )}
         </div>
 
         <h1 className="mt-3 text-2xl font-extrabold tracking-tight text-foreground sm:text-3xl">
@@ -192,12 +244,12 @@ export default function CampeonatoDetailPage() {
             </div>
           )}
           <div>
-            Participantes registrados: <strong className="text-foreground">{new Set(standings.map((s) => s.athlete_id)).size}</strong>
+            Total Atletas: <strong className="text-foreground">{new Set(standings.map((s) => s.athlete_id)).size}</strong>
           </div>
         </div>
       </div>
 
-      {/* Stage Selector Pills */}
+      {/* 1. Stage Selector (Rondas) */}
       {availableStages.length > 0 && (
         <div className="mt-8 flex items-center gap-2 overflow-x-auto pb-1">
           <span className="text-xs font-semibold uppercase text-foreground-muted mr-2">
@@ -219,71 +271,122 @@ export default function CampeonatoDetailPage() {
         </div>
       )}
 
+      {/* 2. Category Filter (Categorías) */}
+      {availableCategories.length > 0 && (
+        <div className="mt-4 flex items-center gap-2 overflow-x-auto pb-1 border-b border-border pb-4">
+          <Filter className="h-4 w-4 text-foreground-subtle flex-shrink-0" />
+          <span className="text-xs font-medium text-foreground-muted mr-1">
+            Categoría:
+          </span>
+          {availableCategories.map((cat) => (
+            <button
+              key={cat}
+              onClick={() => setSelectedCategory(cat)}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                selectedCategory === cat
+                  ? "bg-slate-900 text-white shadow-sm"
+                  : "bg-background-surface border border-border text-foreground-muted hover:bg-background-subtle"
+              }`}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Standings Table */}
       <div className="mt-6">
-        {stageResults.length > 0 ? (
+        {filteredResults.length > 0 ? (
           <div className="overflow-hidden rounded-xl border border-border bg-background-surface shadow-card">
             <div className="bg-background-subtle/50 px-6 py-3 border-b border-border flex items-center justify-between">
               <span className="text-xs font-bold text-foreground uppercase tracking-wider">
-                Resultados Oficiales - {selectedStage}
+                {selectedStage} • {selectedCategory}
               </span>
               <span className="text-xs text-foreground-muted">
-                {stageResults.length} atletas clasificados
+                {filteredResults.length} atletas clasificados
               </span>
             </div>
 
             <table className="min-w-full divide-y divide-border text-left text-sm">
               <thead className="bg-background-subtle/30 text-xs font-semibold uppercase tracking-wider text-foreground-muted">
                 <tr>
-                  <th scope="col" className="px-6 py-3.5">Posición</th>
+                  <th scope="col" className="px-6 py-3.5">Puesto</th>
                   <th scope="col" className="px-6 py-3.5">Atleta</th>
                   <th scope="col" className="px-6 py-3.5">País</th>
                   <th scope="col" className="px-6 py-3.5 text-center">Tops</th>
                   <th scope="col" className="px-6 py-3.5 text-center">Zonas</th>
-                  <th scope="col" className="px-6 py-3.5 text-right">Resultado (Tops/Zonas/Intentos)</th>
+                  <th scope="col" className="px-6 py-3.5 text-center">T / Z / Intentos</th>
+                  {isModernScoring && (
+                    <th scope="col" className="px-6 py-3.5 text-right">Puntos Totales</th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {stageResults.map((res) => (
-                  <tr key={res.athlete_id} className="hover:bg-background-subtle/30 transition-colors">
-                    <td className="px-6 py-4 font-semibold text-foreground">
-                      <span className="flex items-center gap-1.5">
-                        {res.rank === 1 && <Award className="h-4 w-4 text-amber-500" />}
-                        {res.rank === 2 && <Award className="h-4 w-4 text-slate-400" />}
-                        {res.rank === 3 && <Award className="h-4 w-4 text-amber-700" />}
-                        #{res.rank}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 font-medium text-foreground">
-                      <Link 
-                        href={`/atletas/${res.athlete_id}`}
-                        className="hover:text-brand hover:underline"
-                      >
-                        {res.athlete_name}
-                      </Link>
-                    </td>
-                    <td className="px-6 py-4">
-                      <span className="rounded bg-background-subtle px-2 py-0.5 text-xs font-bold text-foreground">
-                        {res.nacionalidad || "-"}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-center font-bold text-foreground">
-                      {res.tops}
-                    </td>
-                    <td className="px-6 py-4 text-center font-bold text-foreground">
-                      {res.zones}
-                    </td>
-                    <td className="px-6 py-4 text-right font-mono text-xs font-bold text-foreground">
-                      {res.score_formatted}
-                    </td>
-                  </tr>
-                ))}
+                {filteredResults.map((res) => {
+                  const qualifiedToFinal = isQualificationRound && (
+                    finalistAthleteIds.has(res.athlete_id) || res.rank <= 6
+                  );
+
+                  return (
+                    <tr 
+                      key={res.athlete_id} 
+                      className={`transition-colors ${
+                        qualifiedToFinal
+                          ? "bg-emerald-50/40 hover:bg-emerald-50/70"
+                          : "hover:bg-background-subtle/30"
+                      }`}
+                    >
+                      <td className="px-6 py-4 font-semibold text-foreground">
+                        <span className="flex items-center gap-1.5">
+                          {isFinalRound && res.rank === 1 && <Award className="h-4 w-4 text-amber-500" />}
+                          {isFinalRound && res.rank === 2 && <Award className="h-4 w-4 text-slate-400" />}
+                          {isFinalRound && res.rank === 3 && <Award className="h-4 w-4 text-amber-700" />}
+                          #{res.rank}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 font-medium text-foreground">
+                        <div className="flex items-center gap-2">
+                          <Link 
+                            href={`/atletas/${res.athlete_id}`}
+                            className="hover:text-brand hover:underline font-semibold"
+                          >
+                            {res.athlete_name}
+                          </Link>
+                          {qualifiedToFinal && (
+                            <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
+                              <CheckCircle2 className="h-3 w-3" /> Pasa a Final
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className="rounded bg-background-subtle px-2 py-0.5 text-xs font-bold text-foreground">
+                          {res.nacionalidad || "-"}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 text-center font-bold text-foreground">
+                        {res.tops}
+                      </td>
+                      <td className="px-6 py-4 text-center font-bold text-foreground">
+                        {res.zones}
+                      </td>
+                      <td className="px-6 py-4 text-center font-mono text-xs text-foreground-muted">
+                        {res.score_breakdown || `${res.tops}T ${res.zones}z ${res.top_attempts} ${res.zone_attempts}`}
+                      </td>
+                      {isModernScoring && (
+                        <td className="px-6 py-4 text-right font-mono text-sm font-black text-brand">
+                          {res.total_points ?? 0} pts
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         ) : (
           <div className="rounded-xl border border-dashed border-border p-8 text-center text-xs text-foreground-muted">
-            No hay resultados registrados para la ronda seleccionada.
+            No hay resultados registrados para la ronda y categoría seleccionadas.
           </div>
         )}
       </div>
